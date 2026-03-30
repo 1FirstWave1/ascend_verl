@@ -24,6 +24,36 @@ from pathlib import Path
 from typing import Any
 
 
+def _to_json_serializable(obj: Any) -> Any:
+    """Recursively convert common non-JSON-native scalar/container types."""
+    if isinstance(obj, dict):
+        return {k: _to_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_json_serializable(v) for v in obj]
+
+    try:
+        import torch
+
+        if isinstance(obj, torch.Tensor):
+            if obj.ndim == 0:
+                return obj.item()
+            return _to_json_serializable(obj.detach().cpu().tolist())
+    except ImportError:
+        pass
+
+    try:
+        import numpy as np
+
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return _to_json_serializable(obj.tolist())
+    except ImportError:
+        pass
+
+    return obj
+
+
 class Tracking:
     """A unified tracking interface for logging experiment data to multiple backends.
 
@@ -246,7 +276,7 @@ class FileLogger:
         self.fp = open(self.filepath, "w")
 
     def log(self, data, step):
-        data = {"step": step, "data": data}
+        data = _to_json_serializable({"step": step, "data": data})
         self.fp.write(json.dumps(data) + "\n")
 
     def finish(self):
