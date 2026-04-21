@@ -25,7 +25,8 @@ import datasets
 
 from verl.utils.hdfs_io import copy, makedirs
 
-sys.set_int_max_str_digits(100000)
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(100000)
 
 
 def build_prompt(question: str, starter_code: str | None, fn_name: str | None) -> str:
