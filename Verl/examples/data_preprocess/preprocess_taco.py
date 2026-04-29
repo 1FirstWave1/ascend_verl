@@ -13,6 +13,10 @@
 # limitations under the License.
 """
 Preprocess the TACO dataset to verl parquet format.
+
+This follows the critic-rl TACO split:
+- function-call tasks are converted to Python assert tests
+- standard-input tasks are converted to stdin/stdout tests
 """
 
 import argparse
@@ -29,37 +33,9 @@ if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(100000)
 
 
-def build_prompt(question: str, starter_code: str | None, fn_name: str | None) -> str:
-    prompt = (
-        "You will be given a programming problem. Write a correct Python solution that passes all hidden tests.\n\n"
-        f"Problem:\n{question.strip()}\n\n"
-    )
-
-    if starter_code and starter_code.strip():
-        prompt += (
-            "Use the following starter code if needed, and return the final solution inside a Python code block.\n"
-            f"```python\n{starter_code.strip()}\n```\n"
-        )
-    elif fn_name:
-        prompt += (
-            f"The judge will call the function `{fn_name}` directly. "
-            "Return the final solution inside a Python code block.\n"
-            "```python\n# YOUR CODE HERE\n```\n"
-        )
-    else:
-        prompt += (
-            "Read from standard input and write to standard output unless the problem specifies a function signature.\n"
-            "Return the final solution inside a Python code block.\n"
-            "```python\n# YOUR CODE HERE\n```\n"
-        )
-
-    return prompt
-
-
-def normalize_test_cases(raw_input_output):
+def _parse_input_output(raw_input_output):
     if raw_input_output is None:
         raise ValueError("input_output is None")
-
     if isinstance(raw_input_output, str):
         raw_input_output = raw_input_output.strip()
         if not raw_input_output:
@@ -72,27 +48,118 @@ def normalize_test_cases(raw_input_output):
 
     inputs = parsed.get("inputs")
     outputs = parsed.get("outputs")
-    fn_name = parsed.get("fn_name", None)
-
-    if not isinstance(inputs, list) or not isinstance(outputs, list) or len(inputs) == 0 or len(outputs) == 0:
+    if not isinstance(inputs, list) or not isinstance(outputs, list) or not inputs or not outputs:
         raise ValueError("input_output must contain non-empty inputs/outputs lists")
-
     if len(inputs) != len(outputs):
         raise ValueError(f"Mismatched test cases: {len(inputs)=}, {len(outputs)=}")
-
-    normalized = {
-        "inputs": inputs,
-        "outputs": outputs,
-        "fn_name": fn_name,
-    }
-    return json.dumps(normalized, ensure_ascii=False), fn_name
+    return parsed
 
 
-def extract_time_limit(raw_time_limit):
+def _normalize_taco_io_value(inputs, outputs):
+    """Match TACO's own lightweight normalization from critic-rl."""
+    try:
+        if isinstance(inputs[0], dict):
+            inputs = [{int(k): v for k, v in inputs[0].items()}]
+    except Exception:
+        pass
+
+    try:
+        if isinstance(outputs, dict):
+            outputs = [{int(k): v for k, v in outputs.items()}]
+    except Exception:
+        pass
+
+    try:
+        if isinstance(outputs[0], dict):
+            outputs = [{int(k): v for k, v in outputs[0].items()}]
+    except Exception:
+        pass
+
+    if isinstance(outputs, list) and outputs:
+        outputs = outputs[0]
+
+    return inputs, outputs
+
+
+def _create_function_call_str(func_name, args_list):
+    args_str = ", ".join(repr(arg) for arg in args_list)
+    return f"{func_name}({args_str})"
+
+
+def _build_tests(raw_input_output):
+    parsed = _parse_input_output(raw_input_output)
+    fn_name = parsed.get("fn_name") or None
+    tests = []
+
+    for raw_inputs, raw_outputs in zip(parsed["inputs"], parsed["outputs"], strict=True):
+        inputs, outputs = _normalize_taco_io_value(raw_inputs, raw_outputs)
+
+        if fn_name is None:
+            if isinstance(inputs, list) or isinstance(outputs, list):
+                continue
+            if not isinstance(inputs, str) or not inputs.strip():
+                continue
+            if " = " in inputs or "[]" in inputs:
+                continue
+            tests.append(
+                {
+                    "input": {"stdin": inputs},
+                    "output": {"stdout": str(outputs)},
+                }
+            )
+        else:
+            if isinstance(inputs, str):
+                continue
+            tests.append(
+                f"assert {_create_function_call_str(fn_name, inputs)} == {repr(outputs)}".replace("'\"", '"').replace(
+                    "\"'", '"'
+                )
+            )
+
+    if not tests:
+        raise ValueError("no compatible tests")
+
+    return ("assert" if fn_name else "io"), tests, fn_name
+
+
+def _extract_time_limit(raw_time_limit):
     if raw_time_limit is None:
         return None
     match = re.search(r"[-+]?\d*\.\d+|\d+", str(raw_time_limit))
     return float(match.group()) if match else None
+
+
+def _build_prompt(question, starter_code, test_type, tests, fn_name):
+    prompt = (
+        "You will be given a programming problem. Write a correct Python solution that passes all tests.\n\n"
+        f"Problem:\n{question.strip()}\n\n"
+    )
+
+    if test_type == "assert":
+        prompt += f"The judge will call `{fn_name}` directly. "
+        if starter_code and starter_code.strip():
+            prompt += (
+                "Use the following starter code if needed, and return the final solution inside a Python code block.\n"
+                f"```python\n{starter_code.strip()}\n```\n"
+            )
+        else:
+            prompt += (
+                "Return the final solution inside a Python code block.\n"
+                "```python\n# YOUR CODE HERE\n```\n"
+            )
+    else:
+        prompt += "Read from standard input and write to standard output. "
+        if starter_code and starter_code.strip():
+            prompt += (
+                "Use the following starter code if needed, and return the final solution inside a Python code block.\n"
+                f"```python\n{starter_code.strip()}\n```\n"
+            )
+        else:
+            prompt += (
+                "Return the final solution inside a Python code block.\n"
+                "```python\n# YOUR CODE HERE\n```\n"
+            )
+    return prompt
 
 
 def make_map_fn(split):
@@ -103,12 +170,22 @@ def make_map_fn(split):
         if "<image>" in question or "<span " in question:
             raise ValueError("question contains unsupported markup")
 
-        ground_truth, fn_name = normalize_test_cases(example.get("input_output"))
+        test_type, tests, fn_name = _build_tests(example.get("input_output"))
         starter_code = example.get("starter_code", "") or ""
+        time_limit = _extract_time_limit(example.get("time_limit"))
+        ground_truth = json.dumps(
+            {
+                "type": test_type,
+                "tests": tests,
+                "fn_name": fn_name,
+                "time_limit": time_limit,
+            },
+            ensure_ascii=False,
+        )
 
         return {
             "data_source": "taco",
-            "prompt": [{"role": "user", "content": build_prompt(question, starter_code, fn_name)}],
+            "prompt": [{"role": "user", "content": _build_prompt(question, starter_code, test_type, tests, fn_name)}],
             "ability": "code",
             "reward_model": {"style": "rule", "ground_truth": ground_truth},
             "extra_info": {
@@ -118,7 +195,8 @@ def make_map_fn(split):
                 "difficulty": example.get("difficulty"),
                 "source": example.get("source"),
                 "tags": example.get("tags"),
-                "time_limit": extract_time_limit(example.get("time_limit")),
+                "time_limit": time_limit,
+                "test_type": test_type,
                 "fn_name": fn_name,
                 "starter_code": starter_code,
                 "question": question,
@@ -133,8 +211,7 @@ def add_valid_flag(example):
         question = example.get("question", "")
         if "<image>" in question or "<span " in question:
             raise ValueError("question contains unsupported markup")
-        _, fn_name = normalize_test_cases(example.get("input_output"))
-        _ = build_prompt(question, example.get("starter_code", ""), fn_name)
+        _build_tests(example.get("input_output"))
         return {"_valid": True}
     except Exception:
         return {"_valid": False}

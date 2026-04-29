@@ -16,7 +16,9 @@
 
 import multiprocessing
 import os
+import shutil
 import sys
+import tempfile
 import traceback
 from typing import Optional
 
@@ -24,18 +26,56 @@ from .testing_util import run_test
 
 
 def _temp_run(sample, generation, debug, result, metadata_list, timeout):
+    original_os_fns = {
+        name: getattr(os, name, None)
+        for name in (
+            "chdir",
+            "chmod",
+            "close",
+            "fspath",
+            "getcwd",
+            "lstat",
+            "open",
+            "rmdir",
+            "scandir",
+            "stat",
+            "unlink",
+        )
+    }
+    original_shutil_rmtree = shutil.rmtree
+    original_cwd = original_os_fns["getcwd"]()
+    tmpdir = tempfile.mkdtemp(prefix="verl_code_reward_")
     with open(os.devnull, "w") as devnull:
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
         sys.stdout = devnull
         sys.stderr = devnull
         try:
+            original_os_fns["chdir"](tmpdir)
             res, metadata = run_test(in_outs=sample, test=generation, debug=debug, timeout=timeout)
             result.append(res)
             metadata_list.append(metadata)
         except Exception:
             # print(e) # some tracebacks are extremely long.
+            sys.stderr = original_stderr
             traceback.print_exc(10)
             result.append([-1 for i in range(len(sample["inputs"]))])
             metadata_list.append({})
+        finally:
+            for name, fn in original_os_fns.items():
+                if fn is not None:
+                    setattr(os, name, fn)
+            shutil.rmtree = original_shutil_rmtree
+            try:
+                original_os_fns["chdir"](original_cwd)
+            except Exception:
+                pass
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            try:
+                original_shutil_rmtree(tmpdir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def check_correctness(in_outs: Optional[dict], generation, timeout=10, debug=True):
