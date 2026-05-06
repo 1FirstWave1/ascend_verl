@@ -197,9 +197,14 @@ class RLHFDataset(Dataset):
                         apply_kwargs = dict(**self.apply_chat_template_kwargs)
                         if self.tool_schemas is not None:
                             apply_kwargs["tools"] = self.tool_schemas
+                        continue_final_message = bool(messages) and messages[-1]["role"] == "assistant"
 
                         raw_prompt = self.processor.apply_chat_template(
-                            messages, add_generation_prompt=True, tokenize=False, **apply_kwargs
+                            messages,
+                            add_generation_prompt=not continue_final_message,
+                            continue_final_message=continue_final_message,
+                            tokenize=False,
+                            **apply_kwargs,
                         )
                         if image_key in doc and doc[image_key]:
                             images = [
@@ -242,9 +247,16 @@ class RLHFDataset(Dataset):
                         apply_kwargs = dict(**self.apply_chat_template_kwargs)
                         if self.tool_schemas is not None:
                             apply_kwargs["tools"] = self.tool_schemas
+                        messages = doc[prompt_key]
+                        continue_final_message = bool(messages) and messages[-1]["role"] == "assistant"
 
                         return len(
-                            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
+                            tokenizer.apply_chat_template(
+                                messages,
+                                add_generation_prompt=not continue_final_message,
+                                continue_final_message=continue_final_message,
+                                **apply_kwargs,
+                            )
                         )
                     except Exception:
                         print("Error processing one of the samples, skipping...")
