@@ -616,6 +616,47 @@ def compute_reinforce_plus_plus_outcome_advantage(
     return advantages, returns
 
 
+@register_adv_est("acc_conf")
+def compute_acc_conf_advantage_return(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    conf_reward: torch.Tensor,
+    acc_reward: torch.Tensor,
+    mid: torch.Tensor,
+    n_sample_per_prompt: int,
+    config: Optional[AlgoConfig] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    del token_level_rewards, config
+
+    num_samples = conf_reward.shape[0]
+    if num_samples % n_sample_per_prompt != 0:
+        raise ValueError("The total number of samples is not divisible by n_sample_per_prompt.")
+
+    num_prompts = num_samples // n_sample_per_prompt
+    conf_reward_reshaped = conf_reward.view(num_prompts, n_sample_per_prompt)
+    acc_reward_reshaped = acc_reward.view(num_prompts, n_sample_per_prompt)
+
+    mean_conf = torch.mean(conf_reward_reshaped, dim=1, keepdim=True)
+    std_conf = torch.std(conf_reward_reshaped, dim=1, keepdim=True)
+    mean_acc = torch.mean(acc_reward_reshaped, dim=1, keepdim=True)
+    std_acc = torch.std(acc_reward_reshaped, dim=1, keepdim=True)
+
+    conf_advantages_norm = ((conf_reward_reshaped - mean_conf) / (std_conf + 1e-6)).flatten()
+    acc_advantages_norm = ((acc_reward_reshaped - mean_acc) / (std_acc + 1e-6)).flatten()
+
+    token_indices = torch.arange(response_mask.shape[1], device=response_mask.device)
+    mids_expanded = mid.view(-1, 1)
+    conf_advantages_expanded = conf_advantages_norm.view(-1, 1)
+    acc_advantages_expanded = acc_advantages_norm.view(-1, 1)
+
+    token_level_advantages = torch.where(token_indices < mids_expanded, conf_advantages_expanded, acc_advantages_expanded)
+    token_level_advantages = token_level_advantages * response_mask
+
+    advantages = token_level_advantages
+    returns = token_level_advantages.clone()
+    return advantages, returns
+
+
 @register_adv_est(AdvantageEstimator.REMAX)  # or simply: @register_adv_est("remax")
 def compute_remax_outcome_advantage(
     token_level_rewards: torch.Tensor,

@@ -221,6 +221,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         metrics["tool_call_counts/max"] = tool_call_counts.max()
         metrics["tool_call_counts/mean"] = tool_call_counts.mean()
 
+    for reward_name in ("conf_reward", "acc_reward"):
+        if reward_name in batch.non_tensor_batch:
+            reward_values = np.asarray(batch.non_tensor_batch[reward_name], dtype=np.float32)
+            metrics[f"reward/{reward_name}/mean"] = float(reward_values.mean())
+            metrics[f"reward/{reward_name}/max"] = float(reward_values.max())
+            metrics[f"reward/{reward_name}/min"] = float(reward_values.min())
+
     return metrics
 
 

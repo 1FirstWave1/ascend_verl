@@ -256,6 +256,25 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
+        if "conf_reward" in data.non_tensor_batch:
+            adv_kwargs["conf_reward"] = torch.as_tensor(
+                data.non_tensor_batch["conf_reward"],
+                device=data.batch["response_mask"].device,
+                dtype=torch.float32,
+            )
+        if "acc_reward" in data.non_tensor_batch:
+            adv_kwargs["acc_reward"] = torch.as_tensor(
+                data.non_tensor_batch["acc_reward"],
+                device=data.batch["response_mask"].device,
+                dtype=torch.float32,
+            )
+        if "mid" in data.non_tensor_batch:
+            adv_kwargs["mid"] = torch.as_tensor(
+                data.non_tensor_batch["mid"],
+                device=data.batch["response_mask"].device,
+                dtype=torch.long,
+            )
+        adv_kwargs["n_sample_per_prompt"] = num_repeat
 
         # calculate advantage estimator
         advantages, returns = adv_estimator_fn(**adv_kwargs)
@@ -725,12 +744,16 @@ class RayPPOTrainer:
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
-            core_var = "acc" if "acc" in var2metric2val else "reward"
+            core_vars = {"reward"}
+            if "acc" in var2metric2val:
+                core_vars.add("acc")
+            if "acc_reward" in var2metric2val:
+                core_vars.add("acc_reward")
             for var_name, metric2val in var2metric2val.items():
                 n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
                 for metric_name, metric_val in metric2val.items():
                     if (
-                        (var_name == core_var)
+                        (var_name in core_vars)
                         and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"])
                         and (f"@{n_max}" in metric_name)
                     ):
