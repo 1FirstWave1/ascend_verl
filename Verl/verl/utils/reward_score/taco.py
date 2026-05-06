@@ -229,12 +229,12 @@ def compute_score(completion, test_cases, continuous=False):
             results.append(passed)
             metadata.append(info)
             if not passed and printed_errors < _MAX_PRINTED_ERRORS:
-                _print_failure(info, code=code, index=case_index)
+                # _print_failure(info, code=code, index=case_index)
                 printed_errors += 1
 
         score = sum(results) / len(results) if results else 0.0
         return float(score), metadata
     except Exception as exc:
         metadata = {"passed": False, "error": repr(exc), "traceback": traceback.format_exc(limit=5)}
-        _print_failure(metadata, code=_extract_code(completion) if isinstance(completion, str) else None)
+        # _print_failure(metadata, code=_extract_code(completion) if isinstance(completion, str) else None)
         return 0.0, [metadata]
