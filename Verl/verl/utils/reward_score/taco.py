@@ -28,10 +28,12 @@ import shutil
 import sys
 import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from unittest.mock import mock_open, patch
 
 _MAX_PRINTED_ERRORS = int(os.getenv("TACO_REWARD_MAX_PRINTED_ERRORS", "1"))
+_MAX_PARALLEL_CASES = max(1, int(os.getenv("TACO_REWARD_MAX_PARALLEL_CASES", "10")))
 
 _PRELUDE = """
 from string import *
@@ -209,6 +211,31 @@ def _run_case(code: str, test_type: str, test_case: Any, timeout: float):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _run_cases_parallel(code: str, test_type: str, tests: list[Any], timeout: float):
+    max_workers = min(len(tests), _MAX_PARALLEL_CASES)
+    results = [False] * len(tests)
+    metadata = [{"passed": False, "error": "not run"} for _ in tests]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(_run_case, code, test_type, test_case, timeout): case_index
+            for case_index, test_case in enumerate(tests)
+        }
+        for future in as_completed(future_to_index):
+            case_index = future_to_index[future]
+            try:
+                passed, info = future.result()
+            except Exception as exc:
+                passed = False
+                info = {
+                    "passed": False,
+                    "error": repr(exc),
+                    "traceback": traceback.format_exc(limit=5),
+                }
+            results[case_index] = passed
+            metadata[case_index] = info
+    return results, metadata
+
+
 def compute_score(completion, test_cases, continuous=False):
     try:
         if not isinstance(test_cases, dict):
@@ -221,13 +248,9 @@ def compute_score(completion, test_cases, continuous=False):
         if continuous:
             tests = tests[:10]
 
-        results = []
-        metadata = []
+        results, metadata = _run_cases_parallel(code, test_type, tests, timeout)
         printed_errors = 0
-        for case_index, test_case in enumerate(tests):
-            passed, info = _run_case(code, test_type, test_case, timeout)
-            results.append(passed)
-            metadata.append(info)
+        for case_index, (passed, info) in enumerate(zip(results, metadata, strict=True)):
             if not passed and printed_errors < _MAX_PRINTED_ERRORS:
                 # _print_failure(info, code=code, index=case_index)
                 printed_errors += 1
