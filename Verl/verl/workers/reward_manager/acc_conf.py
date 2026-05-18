@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import defaultdict
 import re
 from typing import Any
 
@@ -31,20 +30,13 @@ def conf_acc_format_eval(sequence: str) -> bool:
 
 def compute_acc_conf_rewards(
     sequences: list[str],
-    data_sources: list[str],
-    ground_truths: list[str],
+    acc_reward_list: list[float],
     tokenizer,
     n_samples_per_prompt: int,
-    compute_score_fn,
 ) -> tuple[list[float], list[float], list[int]]:
     conf_reward_list: list[float] = []
-    acc_reward_list: list[float] = []
     mid_list: list[int] = []
-
-    acc_reward_list = [
-        float(compute_score_fn(data_source=data_source, solution_str=sequence, ground_truth=ground_truth))
-        for sequence, data_source, ground_truth in zip(sequences, data_sources, ground_truths, strict=True)
-    ]
+    acc_reward_list = list(acc_reward_list)
 
     group_acc_list: list[float] = []
     for i in range(0, len(acc_reward_list), n_samples_per_prompt):
@@ -98,12 +90,7 @@ class AccConfRewardManager(AbstractRewardManager):
         self.compute_score = compute_score or default_compute_score
 
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
-        reward_from_rm_scores = self._extract_reward_from_rm_scores(data, return_dict)
-        if reward_from_rm_scores is not None:
-            return reward_from_rm_scores
-
-        reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
-        reward_extra_info = defaultdict(list)
+        reward_extra_info: dict[str, list] = {}
         already_print_data_sources = {}
 
         prompt_ids = data.batch["prompts"]
@@ -114,20 +101,26 @@ class AccConfRewardManager(AbstractRewardManager):
         sequences = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
         data_sources = list(data.non_tensor_batch[self.reward_fn_key])
         ground_truths = [item.non_tensor_batch["reward_model"]["ground_truth"] for item in data]
+        extra_infos = data.non_tensor_batch.get("extra_info", [None] * len(data))
+        acc_reward_list = [
+            float(self.compute_score(data_source, sequence, ground_truth, extra_info))
+            for sequence, data_source, ground_truth, extra_info in zip(
+                sequences, data_sources, ground_truths, extra_infos, strict=True
+            )
+        ]
         conf_reward_list, acc_reward_list, mid_list = compute_acc_conf_rewards(
             sequences=sequences,
-            data_sources=data_sources,
-            ground_truths=ground_truths,
+            acc_reward_list=acc_reward_list,
             tokenizer=self.tokenizer,
             n_samples_per_prompt=self.n_samples_per_prompt,
-            compute_score_fn=self.compute_score,
         )
+        reward_tensor = torch.zeros_like(response_ids, dtype=torch.float32)
+        reward_extra_info["conf_reward"] = list(conf_reward_list)
+        reward_extra_info["acc_reward"] = list(acc_reward_list)
+        reward_extra_info["mid"] = list(mid_list)
 
         for i in range(len(data)):
             reward_tensor[i, valid_response_length[i].item() - 1] = acc_reward_list[i]
-            reward_extra_info["conf_reward"].append(conf_reward_list[i])
-            reward_extra_info["acc_reward"].append(acc_reward_list[i])
-            reward_extra_info["mid"].append(mid_list[i])
 
             data_source = data.non_tensor_batch[self.reward_fn_key][i]
             if data_source not in already_print_data_sources:

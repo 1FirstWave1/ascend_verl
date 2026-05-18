@@ -263,13 +263,15 @@ class AgentLoopBase(ABC):
         Returns:
             list[int]: Prompt token ids.
         """
+        continue_final_message = bool(messages) and messages[-1]["role"] == "assistant"
         if self.processor is not None:
             raw_prompt = await self.loop.run_in_executor(
                 None,
                 lambda: self.processor.apply_chat_template(
                     messages,
                     tools=tools,
-                    add_generation_prompt=True,
+                    add_generation_prompt=not continue_final_message,
+                    continue_final_message=continue_final_message,
                     tokenize=False,
                     **self.apply_chat_template_kwargs,
                 ),
@@ -297,7 +299,8 @@ class AgentLoopBase(ABC):
                 lambda: self.tokenizer.apply_chat_template(
                     messages,
                     tools=tools,
-                    add_generation_prompt=True,
+                    add_generation_prompt=not continue_final_message,
+                    continue_final_message=continue_final_message,
                     tokenize=True,
                     **self.apply_chat_template_kwargs,
                 ),

@@ -350,6 +350,7 @@ class RayPPOTrainer:
         # legacy reward model implementation
         self.use_rm = need_reward_model(self.role_worker_mapping)
         self.use_reward_loop = self.config.reward_model.use_reward_loop
+        self.reward_loop_manager = None
 
         self.use_critic = need_critic(self.config)
         self.ray_worker_group_cls = ray_worker_group_cls
@@ -606,6 +607,43 @@ class RayPPOTrainer:
                 reward_tensor = reward_tensor.sum(dim=-1)
             return reward_tensor, reward_extra_infos_dict
 
+    def _apply_acc_conf_reward(
+        self, batch: DataProto, reward_tensor: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, list]]:
+        if self.config.algorithm.adv_estimator != "acc_conf":
+            return reward_tensor, {}
+
+        from verl.workers.reward_manager.acc_conf import compute_acc_conf_rewards
+
+        prompt_ids = batch.batch["prompts"]
+        prompt_length = prompt_ids.shape[-1]
+        response_ids = batch.batch["responses"]
+        valid_response_length = batch.batch["attention_mask"][:, prompt_length:].sum(dim=-1)
+        sequences = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
+        acc_reward_list = reward_tensor.sum(dim=-1).detach().cpu().tolist()
+        n_samples_per_prompt = self.config.reward_model.get("reward_kwargs", {}).get(
+            "n_samples_per_prompt", self.config.actor_rollout_ref.rollout.n
+        )
+
+        conf_reward_list, acc_reward_list, mid_list = compute_acc_conf_rewards(
+            sequences=sequences,
+            acc_reward_list=acc_reward_list,
+            tokenizer=self.tokenizer,
+            n_samples_per_prompt=int(n_samples_per_prompt),
+        )
+
+        adjusted_reward_tensor = torch.zeros_like(reward_tensor, dtype=torch.float32)
+        row_idx = torch.arange(adjusted_reward_tensor.size(0), device=adjusted_reward_tensor.device)
+        col_idx = valid_response_length.to(adjusted_reward_tensor.device).long() - 1
+        adjusted_reward_tensor[row_idx, col_idx] = torch.tensor(
+            acc_reward_list, dtype=torch.float32, device=adjusted_reward_tensor.device
+        )
+        return adjusted_reward_tensor, {
+            "conf_reward": list(conf_reward_list),
+            "acc_reward": list(acc_reward_list),
+            "mid": list(mid_list),
+        }
+
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
         reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
 
@@ -858,15 +896,16 @@ class RayPPOTrainer:
             # 2. reward model is enabled but extra resource pool is enabled
             # If we cannot parallelize, we should enable synchronous mode here, and launch a reward loop manager here
             # else for parallelize mode, we launch a reward worker for each rollout worker (in agent loop, not here)
-            if not can_reward_loop_parallelize:
-                from verl.experimental.reward_loop import RewardLoopManager
+            from verl.experimental.reward_loop import RewardLoopManager
 
+            rm_resource_pool = None
+            if not can_reward_loop_parallelize:
                 self.config.reward_model.n_gpus_per_node = self.config.trainer.n_gpus_per_node
-                resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
-                self.reward_loop_manager = RewardLoopManager(
-                    config=self.config,
-                    rm_resource_pool=resource_pool,
-                )
+                rm_resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
+            self.reward_loop_manager = RewardLoopManager(
+                config=self.config,
+                rm_resource_pool=rm_resource_pool,
+            )
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
@@ -1448,6 +1487,10 @@ class RayPPOTrainer:
                                 assert self.reward_loop_manager is not None, "RewardLoopManager is None"
                                 reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
+                        elif self.use_reward_loop and "rm_scores" not in batch.batch.keys():
+                            assert self.reward_loop_manager is not None, "RewardLoopManager is None"
+                            reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
+                            batch = batch.union(reward_tensor)
 
                         # Compute or extract reward for training
                         if self.config.reward_model.launch_reward_fn_async:
@@ -1458,6 +1501,12 @@ class RayPPOTrainer:
                             reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
                                 batch, reward_fn=self.reward_fn, return_dict=False
                             )
+                            acc_conf_reward_tensor, acc_conf_extra_infos = self._apply_acc_conf_reward(
+                                batch, reward_tensor
+                            )
+                            if acc_conf_extra_infos:
+                                reward_tensor = acc_conf_reward_tensor
+                                reward_extra_infos_dict.update(acc_conf_extra_infos)
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)

@@ -85,6 +85,8 @@ start_training() {
     actor_rollout_ref.rollout.n=16 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.fsdp_size=$NPUS_PER_NODE \
+    actor_rollout_ref.ref.fsdp_config.fsdp_size=$NPUS_PER_NODE \
     reward_model.use_reward_loop=False \
     reward_model.reward_manager=prime \
     algorithm.kl_ctrl.kl_coef=0.001 \

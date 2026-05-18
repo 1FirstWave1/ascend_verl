@@ -56,7 +56,7 @@ echo "**** CURRENT_IP: ${CURRENT_IP}"
 
 start_training() {
   python -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=grpo \
+    algorithm.adv_estimator=acc_conf \
     data.train_files=$VERL_DATA_FOLDER/code/taco/train.parquet \
     data.val_files=$VERL_DATA_FOLDER/code/taco/test.parquet \
     data.train_batch_size=64 \
@@ -85,8 +85,10 @@ start_training() {
     actor_rollout_ref.rollout.n=16 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    reward_model.use_reward_loop=False \
-    reward_model.reward_manager=acc_conf \
+    reward_model.use_reward_loop=True \
+    reward_model.enable=False \
+    reward_model.reward_manager=naive \
+    reward_model.num_workers=64 \
     reward_model.reward_kwargs.n_samples_per_prompt=16 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
@@ -151,6 +153,4 @@ fi
 
 echo "**** END ****"
 sleep 600
-
-
 

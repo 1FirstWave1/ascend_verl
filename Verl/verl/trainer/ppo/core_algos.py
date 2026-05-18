@@ -625,8 +625,9 @@ def compute_acc_conf_advantage_return(
     mid: torch.Tensor,
     n_sample_per_prompt: int,
     config: Optional[AlgoConfig] = None,
+    **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    del token_level_rewards, config
+    del token_level_rewards, config, kwargs
 
     num_samples = conf_reward.shape[0]
     if num_samples % n_sample_per_prompt != 0:
