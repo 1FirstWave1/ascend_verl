@@ -621,9 +621,11 @@ class RayPPOTrainer:
         valid_response_length = batch.batch["attention_mask"][:, prompt_length:].sum(dim=-1)
         sequences = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
         acc_reward_list = reward_tensor.sum(dim=-1).detach().cpu().tolist()
-        n_samples_per_prompt = self.config.reward_model.get("reward_kwargs", {}).get(
-            "n_samples_per_prompt", self.config.actor_rollout_ref.rollout.n
-        )
+        n_samples_per_prompt = self.config.reward_model.get("n_samples_per_prompt", None)
+        if n_samples_per_prompt is None:
+            n_samples_per_prompt = self.config.reward_model.get("reward_kwargs", {}).get(
+                "n_samples_per_prompt", self.config.actor_rollout_ref.rollout.n
+            )
 
         conf_reward_list, acc_reward_list, mid_list = compute_acc_conf_rewards(
             sequences=sequences,

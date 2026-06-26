@@ -85,11 +85,12 @@ start_training() {
     actor_rollout_ref.rollout.n=16 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.rollout.agent.num_workers=32 \
     reward_model.use_reward_loop=True \
     reward_model.enable=False \
     reward_model.reward_manager=naive \
     reward_model.num_workers=64 \
-    reward_model.reward_kwargs.n_samples_per_prompt=16 \
+    +reward_model.n_samples_per_prompt=16 \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tensorboard','file'] \
